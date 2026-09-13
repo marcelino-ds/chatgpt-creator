@@ -9,6 +9,7 @@ import (
 
 	"github.com/verssache/chatgpt-creator/internal/config"
 	"github.com/verssache/chatgpt-creator/internal/register"
+	"github.com/verssache/chatgpt-creator/internal/sentinel"
 )
 
 func main() {
@@ -20,6 +21,10 @@ func main() {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Allow the observed Sentinel SDK version to be overridden at runtime
+	// instead of being tied to a hardcoded path in the source.
+	sentinel.SetSentinelSDKVersion(cfg.SentinelSDK)
 
 	reader := bufio.NewReader(os.Stdin)
 

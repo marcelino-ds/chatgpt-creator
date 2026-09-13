@@ -12,6 +12,7 @@ type Config struct {
 	OutputFile      string `json:"output_file"`
 	DefaultPassword string `json:"default_password"`
 	DefaultDomain   string `json:"default_domain"`
+	SentinelSDK     string `json:"sentinel_sdk_version"`
 }
 
 const (
@@ -53,6 +54,10 @@ func Load(path string) (*Config, error) {
 	// Environment variable overrides
 	if proxy := os.Getenv("PROXY"); proxy != "" {
 		cfg.Proxy = proxy
+	}
+
+	if sdk := os.Getenv("SENTINEL_SDK_VERSION"); sdk != "" {
+		cfg.SentinelSDK = sdk
 	}
 
 	return cfg, nil

@@ -260,10 +260,19 @@ func (c *Client) createAccount(name, birthdate string) (int, map[string]interfac
 	return resp.StatusCode, data, nil
 }
 
-// callback handles the callback URL
+// callback handles the callback URL.
+// If cbURL is empty a session check is still performed so an unattended success
+// branch is not treated as a validated account.
 func (c *Client) callback(cbURL string) (int, map[string]interface{}, error) {
 	if cbURL == "" {
-		return 0, nil, fmt.Errorf("empty callback url")
+		ok, err := c.verifySession()
+		if err != nil {
+			return 0, nil, fmt.Errorf("empty callback url and session check failed: %v", err)
+		}
+		if !ok {
+			return 0, nil, fmt.Errorf("empty callback url and no active session")
+		}
+		return 0, map[string]interface{}{"validated_session": true}, nil
 	}
 
 	req, _ := http.NewRequest("GET", cbURL, nil)
@@ -276,8 +285,53 @@ func (c *Client) callback(cbURL string) (int, map[string]interface{}, error) {
 	}
 	defer resp.Body.Close()
 
-	c.log("Callback", resp.StatusCode)
-	return resp.StatusCode, map[string]interface{}{"final_url": resp.Request.URL.String()}, nil
+	finalURL := resp.Request.URL.String()
+
+	// The callback terminates the OAuth exchange; a 2xx here is not proof a
+	// session was formed. Confirm via the session endpoint.
+	checkErr := fmt.Errorf("callback exited at %s (status %d) without a validated session", finalURL, resp.StatusCode)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		ok, sessErr := c.verifySession()
+		if sessErr != nil {
+			return resp.StatusCode, map[string]interface{}{"final_url": finalURL, "validated_session": false}, fmt.Errorf("session check error: %v", sessErr)
+		}
+		if ok {
+			c.log("Callback (session validated)", resp.StatusCode)
+			return resp.StatusCode, map[string]interface{}{"final_url": finalURL, "validated_session": true}, nil
+		}
+	}
+
+	return resp.StatusCode, map[string]interface{}{"final_url": finalURL, "validated_session": false}, checkErr
+}
+
+// verifySession confirms an authenticated session exists on chatgpt.com.
+// A session that lacks an access token (e.g. the pre-login WARNING_BANNER
+// response) is treated as not logged in.
+func (c *Client) verifySession() (bool, error) {
+	req, _ := http.NewRequest("GET", baseURL+"/api/auth/session", nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Referer", baseURL+"/")
+
+	resp, err := c.do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var data struct {
+		AccessToken string `json:"accessToken"`
+		User        any    `json:"user"`
+		Error       string `json:"error"`
+	}
+	json.Unmarshal(body, &data)
+
+	c.log("Verify Session", resp.StatusCode)
+
+	if data.AccessToken != "" || data.User != nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 func (c *Client) RunRegister(emailAddr, password, name, birthdate string) error {
@@ -347,11 +401,13 @@ func (c *Client) RunRegister(emailAddr, password, name, birthdate string) error 
 		} else if u, ok := data["redirect_url"].(string); ok {
 			cbURL = u
 		}
-		c.callback(cbURL)
+		if err := c.completeCallback(cbURL); err != nil {
+			return err
+		}
 		return nil
 	} else if strings.Contains(finalPath, "callback") || strings.Contains(finalURL, "chatgpt.com") {
 		c.print("Account registration completed")
-		return nil
+		return c.completeCallback("")
 	} else {
 		c.print(fmt.Sprintf("Unknown jump: %s", finalURL))
 		c.register(emailAddr, password)
@@ -408,8 +464,34 @@ func (c *Client) RunRegister(emailAddr, password, name, birthdate string) error 
 	} else if u, ok := data["redirect_url"].(string); ok {
 		cbURL = u
 	}
-	c.callback(cbURL)
+	if err := c.completeCallback(cbURL); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+// completeCallback runs the callback exchange if a URL is present and then
+// validates the resulting session. A failure to establish a session aborts the
+// registration instead of silently reporting SUCCESS.
+func (c *Client) completeCallback(cbURL string) error {
+	c.randomDelay(0.2, 0.5)
+
+	if cbURL != "" {
+		if _, _, err := c.callback(cbURL); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// No callback URL returned: only accept when we can still confirm a session.
+	ok, err := c.verifySession()
+	if err != nil {
+		return fmt.Errorf("session verification failed: %v", err)
+	}
+	if !ok {
+		return fmt.Errorf("registration finished but no active session could be confirmed")
+	}
 	return nil
 }
 

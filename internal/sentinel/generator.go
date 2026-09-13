@@ -10,6 +10,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// SentinelSDKVersion is the path version used for the Sentinel frame and SDK.
+// It defaults to the version observed in the reference flow but can be
+// overridden via config or environment so a packaged update does not require a
+// rebuild.
+var SentinelSDKVersion = "20260124ceb8"
+
 type SentinelTokenGenerator struct {
 	DeviceID         string
 	UserAgent        string
@@ -50,7 +56,7 @@ func (g *SentinelTokenGenerator) getConfig() []any {
 	navVal := fmt.Sprintf("%s-undefined", navProp)
 
 	screenRes := "1920x1080"
-	sdkJS := "https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js"
+	sdkJS := "https://sentinel.openai.com/sentinel/" + SentinelSDKVersion + "/sdk.js"
 
 	return []any{
 		screenRes,
@@ -88,23 +94,19 @@ func (g *SentinelTokenGenerator) GenerateToken(seed string, difficulty string) s
 		difficulty = "0"
 	}
 
-	startTime := time.Now()
-	config := g.getConfig()
-
-	for i := 0; i < 500000; i++ {
-		config[3] = i
-		elapsed := time.Since(startTime).Milliseconds()
-		config[9] = elapsed
-
-		data := g.base64Encode(config)
-		hashHex := FNV1a32(seed + data)
-
-		if hashHex[:len(difficulty)] <= difficulty {
-			return "gAAAAAB" + data + "~S"
-		}
+	// Try the FNV-1a path first (the bot's historical PoW). If the difficulty
+	// cannot be satisfied with FNV within the per-hash budget, fall back to
+	// SHA3-512 as used by the reference implementation. Acceptance of either
+	// hash by the server is not assumed here; the fallback only broadens
+	// compatibility when one algorithm fails to produce a proof.
+	if data, ok := g.SolveProof(PoWUseFNV, seed, difficulty, 500000); ok {
+		return "gAAAAAB" + data + "~S"
+	}
+	if data, ok := g.SolveProof(PoWUseSHA3, seed, difficulty, 500000); ok {
+		return "gAAAAAB" + data + "~S"
 	}
 
-	// Fallback error token (simplified)
+	// Fallback error token (simplified).
 	return "gAAAAAB" + "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + g.base64Encode("None")
 }
 

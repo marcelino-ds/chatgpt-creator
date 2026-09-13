@@ -31,6 +31,8 @@ type Client struct {
 	secChUA     string
 	printMu     *sync.Mutex
 	fileMu      *sync.Mutex
+	// logFn, when set, receives every log line instead of stdout.
+	logFn func(workerID int, tag, msg string)
 }
 
 func NewClient(proxy, tag string, workerID int, printMu, fileMu *sync.Mutex) (*Client, error) {
@@ -67,11 +69,9 @@ func NewClient(proxy, tag string, workerID int, printMu, fileMu *sync.Mutex) (*C
 		fileMu:      fileMu,
 	}
 
-	// major version for sec-ch-ua
 	c.major = profile.Major
 	c.secChUA = profile.SecChUA
 
-	// Add initial cookie
 	u, _ := url.Parse(baseURL)
 	cookies := []*http.Cookie{
 		{
@@ -84,6 +84,11 @@ func NewClient(proxy, tag string, workerID int, printMu, fileMu *sync.Mutex) (*C
 	session.GetCookieJar().SetCookies(u, cookies)
 
 	return c, nil
+}
+
+// SetLogFn sets a custom log callback. When nil, logs go to stdout.
+func (c *Client) SetLogFn(fn func(workerID int, tag, msg string)) {
+	c.logFn = fn
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
@@ -110,6 +115,11 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) log(step string, status int) {
+	msg := fmt.Sprintf("%s | %d", step, status)
+	if c.logFn != nil {
+		c.logFn(c.workerID, c.tag, msg)
+		return
+	}
 	c.printMu.Lock()
 	defer c.printMu.Unlock()
 
@@ -118,6 +128,10 @@ func (c *Client) log(step string, status int) {
 }
 
 func (c *Client) print(msg string) {
+	if c.logFn != nil {
+		c.logFn(c.workerID, c.tag, msg)
+		return
+	}
 	c.printMu.Lock()
 	defer c.printMu.Unlock()
 
